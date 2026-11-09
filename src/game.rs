@@ -6,7 +6,7 @@
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::card::{Card, CardSet, Color, NUM_CARDS, bit, cards, color};
+use crate::card::{Card, CardSet, Color, FULL_DECK, NUM_CARDS, bit, cards, color};
 use crate::rules::score;
 use crate::strategy::Strategy;
 
@@ -32,6 +32,8 @@ pub struct GameState {
     palettes: Vec<CardSet>,
     alive: Vec<bool>,
     rule: Color,
+    /// Every card played to the canvas so far (face up, so public).
+    canvas: CardSet,
     current_player: usize,
 }
 
@@ -61,6 +63,7 @@ impl GameState {
             palettes: vec![0; num_players],
             alive: vec![true; num_players],
             rule: Color::Red,
+            canvas: 0,
             current_player: 0,
         }
     }
@@ -144,6 +147,7 @@ impl GameState {
     /// Play `card` from the current player's hand to the canvas.
     fn play_to_canvas(&mut self, card: Card) {
         self.take_from_hand(card);
+        self.canvas |= bit(card);
         self.rule = color(card);
     }
 
@@ -182,6 +186,16 @@ impl PlayerView<'_> {
     pub fn rule(&self) -> Color {
         self.state.rule
     }
+    /// Every card played to the canvas so far.
+    pub fn canvas(&self) -> CardSet {
+        self.state.canvas
+    }
+    /// Cards this player can't see: they are in opponents' hands or were
+    /// never dealt.
+    pub fn unseen(&self) -> CardSet {
+        let palettes = self.state.palettes.iter().fold(0, |a, &p| a | p);
+        FULL_DECK & !self.hand() & !palettes & !self.state.canvas
+    }
     pub fn num_players(&self) -> usize {
         self.state.num_players()
     }
@@ -209,7 +223,6 @@ pub fn play_game(strategies: &[&dyn Strategy], rng: &mut impl Rng) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card::FULL_DECK;
     use crate::strategy::Random;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
@@ -232,6 +245,32 @@ mod tests {
                 assert_eq!(seen, FULL_DECK, "7 players use the whole deck");
             }
         }
+    }
+
+    #[test]
+    fn canvas_tracks_played_cards_and_unseen_excludes_public_info() {
+        let mut rng = SmallRng::seed_from_u64(3);
+        let mut state = GameState::new(3, &mut rng);
+        // `apply` doesn't check legality, so any two cards will do.
+        let mut hand = cards(state.hands[0]);
+        let (pal, canv) = (hand.next().unwrap(), hand.next().unwrap());
+        state.apply(Move::Both {
+            palette: pal,
+            canvas: canv,
+        });
+        assert_eq!(state.canvas, bit(canv));
+        assert_eq!(state.rule, color(canv));
+
+        let view = state.view();
+        let unseen = view.unseen();
+        assert_eq!(unseen & (view.hand() | view.palette(0) | view.canvas()), 0);
+        // Seat 0 can't see the other two hands, nor the 49 - 21 undealt cards.
+        let other_hands = state.hands[1] | state.hands[2];
+        assert_eq!(unseen & other_hands, other_hands);
+        assert_eq!(
+            unseen.count_ones(),
+            NUM_CARDS as u32 - view.hand().count_ones() - 1 - view.canvas().count_ones()
+        );
     }
 
     #[test]
