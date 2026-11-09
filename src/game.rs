@@ -1,4 +1,7 @@
 //! Game state and the core turn loop (basic rules, single round).
+//!
+//! Setup follows house rules rather than the published ones: 7 cards each,
+//! no starting palette card, and seat 0 always goes first.
 
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -8,6 +11,10 @@ use crate::rules::score;
 use crate::strategy::Strategy;
 
 pub const HAND_SIZE: usize = 7;
+pub const MIN_PLAYERS: usize = 2;
+/// 7 players x 7 cards uses exactly the 49-card deck.
+pub const MAX_PLAYERS: usize = 7;
+const _: () = assert!(MAX_PLAYERS * HAND_SIZE <= NUM_CARDS as usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move {
@@ -29,34 +36,33 @@ pub struct GameState {
 }
 
 impl GameState {
+    /// House-rule setup: every player is dealt `HAND_SIZE` cards, palettes
+    /// start empty, the canvas starts on Red, and seat 0 goes first.
     pub fn new(num_players: usize, rng: &mut impl Rng) -> Self {
-        assert!((2..=4).contains(&num_players), "Red7 supports 2-4 players");
+        assert!(
+            (MIN_PLAYERS..=MAX_PLAYERS).contains(&num_players),
+            "supports {MIN_PLAYERS}-{MAX_PLAYERS} players"
+        );
         let mut deck: Vec<Card> = (0..NUM_CARDS).collect();
         deck.shuffle(rng);
         let mut deck = deck.into_iter();
 
         let mut hands = vec![0; num_players];
-        let mut palettes = vec![0; num_players];
-        for p in 0..num_players {
+        for hand in &mut hands {
             for _ in 0..HAND_SIZE {
-                hands[p] |= bit(deck.next().unwrap());
+                *hand |= bit(deck.next().unwrap());
             }
-            palettes[p] = bit(deck.next().unwrap());
         }
 
-        let mut state = GameState {
+        // With empty palettes nobody leads, so seat 0 opens by playing any
+        // card to their palette (always legal under Red).
+        GameState {
             hands,
-            palettes,
+            palettes: vec![0; num_players],
             alive: vec![true; num_players],
             rule: Color::Red,
             current_player: 0,
-        };
-        // The player to the left of whoever is currently winning goes first.
-        let leader = state
-            .leader()
-            .expect("someone always leads under Red at start");
-        state.current_player = state.next_alive(leader);
-        state
+        }
     }
 
     pub fn num_players(&self) -> usize {
@@ -197,5 +203,45 @@ pub fn play_game(strategies: &[&dyn Strategy], rng: &mut impl Rng) -> usize {
             state.apply(mv);
         }
         state.current_player = state.next_alive(state.current_player);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::card::FULL_DECK;
+    use crate::strategy::Random;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    #[test]
+    fn deal_is_disjoint_with_empty_palettes() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        for n in MIN_PLAYERS..=MAX_PLAYERS {
+            let state = GameState::new(n, &mut rng);
+            let mut seen: CardSet = 0;
+            for p in 0..n {
+                assert_eq!(state.hands[p].count_ones() as usize, HAND_SIZE);
+                assert_eq!(seen & state.hands[p], 0, "hands overlap");
+                seen |= state.hands[p];
+                assert_eq!(state.palettes[p], 0);
+            }
+            assert_eq!(state.current_player, 0);
+            assert_eq!(state.leader(), None);
+            if n == MAX_PLAYERS {
+                assert_eq!(seen, FULL_DECK, "7 players use the whole deck");
+            }
+        }
+    }
+
+    #[test]
+    fn games_finish_at_every_player_count() {
+        let mut rng = SmallRng::seed_from_u64(2);
+        for n in MIN_PLAYERS..=MAX_PLAYERS {
+            let seats: Vec<&dyn Strategy> = vec![&Random; n];
+            for _ in 0..200 {
+                assert!(play_game(&seats, &mut rng) < n);
+            }
+        }
     }
 }
