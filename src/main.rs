@@ -1,4 +1,3 @@
-use std::ops::AddAssign;
 use std::time::Instant;
 
 use rand::rngs::SmallRng;
@@ -12,72 +11,64 @@ const SEED: u64 = 0x5EED;
 
 #[derive(Clone, Copy, Default)]
 struct Tally {
-    games: u64,
-    a_seats: u64,
-    b_seats: u64,
-    a_wins: u64,
-    b_wins: u64,
+    seats: u64,
+    wins: u64,
 }
 
-impl AddAssign for Tally {
-    fn add_assign(&mut self, o: Self) {
-        self.games += o.games;
-        self.a_seats += o.a_seats;
-        self.b_seats += o.b_seats;
-        self.a_wins += o.a_wins;
-        self.b_wins += o.b_wins;
+/// Results indexed by player count (`0..MIN_PLAYERS` unused).
+#[derive(Clone)]
+struct Stats {
+    games: [u64; MAX_PLAYERS + 1],
+    /// `by_strategy[s][n]`: strategy `s`'s seats and wins in `n`-player games.
+    by_strategy: Vec<[Tally; MAX_PLAYERS + 1]>,
+}
+
+impl Stats {
+    fn new(num_strategies: usize) -> Self {
+        Stats {
+            games: [0; MAX_PLAYERS + 1],
+            by_strategy: vec![[Tally::default(); MAX_PLAYERS + 1]; num_strategies],
+        }
+    }
+
+    fn merge(mut self, other: Self) -> Self {
+        for (g, o) in self.games.iter_mut().zip(other.games) {
+            *g += o;
+        }
+        for (mine, theirs) in self.by_strategy.iter_mut().zip(other.by_strategy) {
+            for (t, u) in mine.iter_mut().zip(theirs) {
+                t.seats += u.seats;
+                t.wins += u.wins;
+            }
+        }
+        self
     }
 }
 
-/// Tallies indexed by player count.
-type ByPlayers = [Tally; MAX_PLAYERS + 1];
-
-/// Play `games` games between `a` and `b`. Each game picks a random player
-/// count and fills every seat with `a` or `b` at random (at least one of each).
-fn matchup(a: &dyn Strategy, b: &dyn Strategy, games: u64, seed: u64) -> ByPlayers {
+/// Play `games` games. Each game picks a random player count and gives every
+/// seat an independently, uniformly chosen strategy from `bots`.
+fn simulate(bots: &[&dyn Strategy], games: u64, seed: u64) -> Stats {
     (0..games)
         .into_par_iter()
-        .fold(ByPlayers::default, |mut acc, i| {
-            // Per-game seed => results are reproducible regardless of threading.
-            let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(i));
-            let n = rng.random_range(MIN_PLAYERS..=MAX_PLAYERS);
-            let is_a: Vec<bool> = loop {
-                let s: Vec<bool> = (0..n).map(|_| rng.random_bool(0.5)).collect();
-                if s.contains(&true) && s.contains(&false) {
-                    break s;
+        .fold(
+            || Stats::new(bots.len()),
+            |mut acc, i| {
+                // Per-game seed => results are reproducible regardless of threading.
+                let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(i));
+                let n = rng.random_range(MIN_PLAYERS..=MAX_PLAYERS);
+                let picks: Vec<usize> = (0..n).map(|_| rng.random_range(0..bots.len())).collect();
+                let seats: Vec<&dyn Strategy> = picks.iter().map(|&s| bots[s]).collect();
+                let winner = play_game(&seats, &mut rng);
+
+                acc.games[n] += 1;
+                for &s in &picks {
+                    acc.by_strategy[s][n].seats += 1;
                 }
-            };
-            let seats: Vec<&dyn Strategy> = is_a.iter().map(|&x| if x { a } else { b }).collect();
-            let winner = play_game(&seats, &mut rng);
-
-            let a_seats = is_a.iter().filter(|&&x| x).count() as u64;
-            let a_won = u64::from(is_a[winner]);
-            acc[n] += Tally {
-                games: 1,
-                a_seats,
-                b_seats: n as u64 - a_seats,
-                a_wins: a_won,
-                b_wins: 1 - a_won,
-            };
-            acc
-        })
-        .reduce(ByPlayers::default, |mut x, y| {
-            for (t, u) in x.iter_mut().zip(y) {
-                *t += u;
-            }
-            x
-        })
-}
-
-fn print_row(label: &str, t: &Tally) {
-    let pct = |num: u64, den: u64| 100.0 * num as f64 / den as f64;
-    println!(
-        "  {label:<8} {:>9} games   {:>6.2}% / {:>6.2}% per seat   (fair {:>6.2}%)",
-        t.games,
-        pct(t.a_wins, t.a_seats),
-        pct(t.b_wins, t.b_seats),
-        pct(t.games, t.a_seats + t.b_seats),
-    );
+                acc.by_strategy[picks[winner]][n].wins += 1;
+                acc
+            },
+        )
+        .reduce(|| Stats::new(bots.len()), Stats::merge)
 }
 
 fn main() {
@@ -86,26 +77,78 @@ fn main() {
         .map(|s| s.parse().expect("usage: red7 [games]"))
         .unwrap_or(100_000);
 
-    let bots: Vec<&dyn Strategy> = vec![&strategy::Random, &strategy::Conservative];
+    let bots: Vec<&dyn Strategy> = vec![
+        &strategy::Random,
+        &strategy::ConservativePalette,
+        &strategy::AggressivePalette,
+    ];
 
     let start = Instant::now();
-    println!(
-        "{games} games per matchup ({MIN_PLAYERS}-{MAX_PLAYERS} players per game, seats randomly assigned)\n"
-    );
-    for (i, a) in bots.iter().enumerate() {
-        for b in &bots[i + 1..] {
-            let by_n = matchup(*a, *b, games, SEED);
-            let mut total = Tally::default();
-            for t in &by_n {
-                total += *t;
-            }
-            println!("{} vs {}", a.name(), b.name());
-            print_row("all", &total);
-            for (n, t) in by_n.iter().enumerate().skip(MIN_PLAYERS) {
-                print_row(&format!("{n}p"), t);
-            }
-            println!();
+    let stats = simulate(&bots, games, SEED);
+
+    println!("{games} games ({MIN_PLAYERS}-{MAX_PLAYERS} players, each seat a random strategy)\n");
+
+    // Columns: all player counts combined, then each player count.
+    let columns: Vec<(String, Vec<usize>)> =
+        std::iter::once(("all".to_string(), (MIN_PLAYERS..=MAX_PLAYERS).collect()))
+            .chain((MIN_PLAYERS..=MAX_PLAYERS).map(|n| (format!("{n}p"), vec![n])))
+            .collect();
+
+    let width = bots
+        .iter()
+        .map(|b| b.name().len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
+    let pct = |num: u64, den: u64| {
+        if den == 0 {
+            "-".to_string()
+        } else {
+            format!("{:.2}%", 100.0 * num as f64 / den as f64)
         }
+    };
+    let row = |label: &str, cells: Vec<String>| {
+        print!("{label:<width$}");
+        for c in cells {
+            print!(" {c:>8}");
+        }
+        println!();
+    };
+
+    println!("win rate per seat");
+    row("", columns.iter().map(|(name, _)| name.clone()).collect());
+    for (s, bot) in bots.iter().enumerate() {
+        let t = &stats.by_strategy[s];
+        row(
+            bot.name(),
+            columns
+                .iter()
+                .map(|(_, ns)| {
+                    let wins = ns.iter().map(|&n| t[n].wins).sum();
+                    let seats = ns.iter().map(|&n| t[n].seats).sum();
+                    pct(wins, seats)
+                })
+                .collect(),
+        );
     }
-    println!("done in {:.2?}", start.elapsed());
+    row(
+        "fair",
+        columns
+            .iter()
+            .map(|(_, ns)| {
+                let games = ns.iter().map(|&n| stats.games[n]).sum();
+                let seats = ns.iter().map(|&n| stats.games[n] * n as u64).sum();
+                pct(games, seats)
+            })
+            .collect(),
+    );
+    row(
+        "games",
+        columns
+            .iter()
+            .map(|(_, ns)| ns.iter().map(|&n| stats.games[n]).sum::<u64>().to_string())
+            .collect(),
+    );
+
+    println!("\ndone in {:.2?}", start.elapsed());
 }
