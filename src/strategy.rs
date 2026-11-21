@@ -1,8 +1,10 @@
 //! Strategies (bots). Add new ones here and register them in `main.rs`.
 
+use std::cmp::Reverse;
+
 use rand::{Rng, RngExt};
 
-use crate::game::{Move, PlayerView};
+use crate::game::{MAX_PLAYERS, Move, PlayerView};
 
 pub trait Strategy: Sync {
     fn name(&self) -> &str;
@@ -65,11 +67,52 @@ impl Strategy for AggressivePalette {
     }
 }
 
+/// Flat Monte Carlo. Deals opponents random hands from the unseen cards
+/// `samples` times, plays out each legal move randomly to the end of the
+/// round, and picks the move that won most often (ties: earliest in `legal`).
+///
+/// TODO: Sample hands consistent with opponents' past moves.
+/// TODO: Let playouts use a heuristic strategy instead of random moves.
+pub struct MonteCarlo {
+    pub samples: u32,
+}
+
+impl Strategy for MonteCarlo {
+    fn name(&self) -> &str {
+        "monte-carlo"
+    }
+    fn choose(&self, view: &PlayerView, legal: &[Move], rng: &mut dyn Rng) -> Move {
+        if legal.len() == 1 {
+            return legal[0];
+        }
+        let seats = [&Random as &dyn Strategy; MAX_PLAYERS];
+        let seats = &seats[..view.num_players()];
+        let mut wins = vec![0u32; legal.len()];
+        for _ in 0..self.samples {
+            // Every move is scored on the same worlds, so differences between
+            // moves aren't drowned out by differences between deals.
+            let world = view.sample_world(rng);
+            for (&mv, w) in legal.iter().zip(&mut wins) {
+                let mut game = world.clone();
+                game.apply(mv);
+                game.end_turn();
+                if game.play_out(seats, rng) == view.me() {
+                    *w += 1;
+                }
+            }
+        }
+        let best = (0..legal.len())
+            .max_by_key(|&i| (wins[i], Reverse(i)))
+            .unwrap();
+        legal[best]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::card::{Color, make_card};
-    use crate::game::GameState;
+    use crate::game::{GameState, play_game};
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -79,6 +122,24 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(0);
         let state = GameState::new(2, &mut rng);
         strategy.choose(&state.view(), legal, &mut rng)
+    }
+
+    #[test]
+    fn monte_carlo_beats_random_heads_up() {
+        let mc = MonteCarlo { samples: 8 };
+        let mut rng = SmallRng::seed_from_u64(7);
+        let games = 200;
+        let mut mc_wins = 0;
+        for g in 0..games {
+            // Alternate seats so moving first favors neither side.
+            let mc_seat = g % 2;
+            let mut seats: [&dyn Strategy; 2] = [&Random, &Random];
+            seats[mc_seat] = &mc;
+            if play_game(&seats, &mut rng) == mc_seat {
+                mc_wins += 1;
+            }
+        }
+        assert!(mc_wins >= 150, "MC won only {mc_wins}/{games} vs random");
     }
 
     #[test]

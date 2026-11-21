@@ -160,6 +160,31 @@ impl GameState {
     pub fn view(&self) -> PlayerView<'_> {
         PlayerView { state: self }
     }
+
+    /// Pass the turn to the next living player.
+    pub fn end_turn(&mut self) {
+        self.current_player = self.next_alive(self.current_player);
+    }
+
+    /// Play from the current state until one player remains; returns the
+    /// winning seat. `strategies[p]` moves for seat `p`.
+    pub fn play_out(&mut self, strategies: &[&dyn Strategy], rng: &mut dyn Rng) -> usize {
+        debug_assert_eq!(strategies.len(), self.num_players());
+        loop {
+            if self.alive_count() == 1 {
+                return self.alive.iter().position(|&a| a).unwrap();
+            }
+            let moves = self.legal_moves();
+            if moves.is_empty() {
+                self.alive[self.current_player] = false;
+            } else {
+                let mv = strategies[self.current_player].choose(&self.view(), &moves, rng);
+                debug_assert!(moves.contains(&mv), "strategy returned an illegal move");
+                self.apply(mv);
+            }
+            self.end_turn();
+        }
+    }
 }
 
 /// What a player is allowed to see: their own hand plus all public info.
@@ -199,25 +224,29 @@ impl PlayerView<'_> {
     pub fn num_players(&self) -> usize {
         self.state.num_players()
     }
+
+    /// A full game state consistent with what this player can see: each
+    /// opponent's hand is dealt uniformly at random from `unseen()`, keeping
+    /// its real size. Everything else is copied as-is (all of it is public).
+    pub fn sample_world(&self, rng: &mut dyn Rng) -> GameState {
+        let mut pool: Vec<Card> = cards(self.unseen()).collect();
+        pool.shuffle(rng);
+        let mut pool = pool.into_iter();
+        let mut world = self.state.clone();
+        // Re-deal every opponent, dead or alive, so no true hand leaks through.
+        for p in (0..self.num_players()).filter(|&p| p != self.me()) {
+            world.hands[p] = pool
+                .by_ref()
+                .take(self.hand_size(p) as usize)
+                .fold(0, |hand, c| hand | bit(c));
+        }
+        world
+    }
 }
 
 /// Play one full game; returns the index of the winning seat.
 pub fn play_game(strategies: &[&dyn Strategy], rng: &mut impl Rng) -> usize {
-    let mut state = GameState::new(strategies.len(), rng);
-    loop {
-        if state.alive_count() == 1 {
-            return state.alive.iter().position(|&a| a).unwrap();
-        }
-        let moves = state.legal_moves();
-        if moves.is_empty() {
-            state.alive[state.current_player] = false;
-        } else {
-            let mv = strategies[state.current_player].choose(&state.view(), &moves, rng);
-            debug_assert!(moves.contains(&mv), "strategy returned an illegal move");
-            state.apply(mv);
-        }
-        state.current_player = state.next_alive(state.current_player);
-    }
+    GameState::new(strategies.len(), rng).play_out(strategies, rng)
 }
 
 #[cfg(test)]
@@ -271,6 +300,53 @@ mod tests {
             unseen.count_ones(),
             NUM_CARDS as u32 - view.hand().count_ones() - 1 - view.canvas().count_ones()
         );
+    }
+
+    #[test]
+    fn sample_world_preserves_public_state() {
+        let mut rng = SmallRng::seed_from_u64(4);
+        let mut state = GameState::new(4, &mut rng);
+        for _ in 0..6 {
+            let moves = state.legal_moves();
+            if moves.is_empty() {
+                state.alive[state.current_player] = false;
+            } else {
+                let mv = Random.choose(&state.view(), &moves, &mut rng);
+                state.apply(mv);
+            }
+            state.end_turn();
+        }
+        assert!(state.canvas != 0, "want some canvas cards for a real test");
+
+        let me = state.current_player;
+        let world = state.view().sample_world(&mut rng);
+        assert_eq!(world.hands[me], state.hands[me]);
+        assert_eq!(world.palettes, state.palettes);
+        assert_eq!(world.alive, state.alive);
+        assert_eq!(world.canvas, state.canvas);
+        assert_eq!(world.rule, state.rule);
+        assert_eq!(world.current_player, me);
+
+        let mut seen = world.canvas;
+        for p in 0..4 {
+            assert_eq!(world.hands[p].count_ones(), state.hands[p].count_ones());
+            for set in [world.hands[p], world.palettes[p]] {
+                assert_eq!(seen & set, 0, "cards overlap");
+                seen |= set;
+            }
+        }
+    }
+
+    #[test]
+    fn sample_world_does_not_depend_on_hidden_hands() {
+        let mut rng = SmallRng::seed_from_u64(5);
+        let state = GameState::new(3, &mut rng);
+        let mut swapped = state.clone();
+        swapped.hands.swap(1, 2);
+
+        let a = state.view().sample_world(&mut SmallRng::seed_from_u64(6));
+        let b = swapped.view().sample_world(&mut SmallRng::seed_from_u64(6));
+        assert_eq!(a.hands, b.hands);
     }
 
     #[test]

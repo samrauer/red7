@@ -81,6 +81,7 @@ fn main() {
         &strategy::Random,
         &strategy::ConservativePalette,
         &strategy::AggressivePalette,
+        &strategy::MonteCarlo { samples: 50 },
     ];
 
     let start = Instant::now();
