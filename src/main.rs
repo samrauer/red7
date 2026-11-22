@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -48,8 +49,16 @@ impl Stats {
 /// Play `games` games. Each game picks a random player count and gives every
 /// seat an independently, uniformly chosen strategy from `bots`.
 fn simulate(bots: &[&dyn Strategy], games: u64, seed: u64) -> Stats {
-    (0..games)
+    let progress_bar = ProgressBar::new(games).with_style(
+        ProgressStyle::with_template(
+            "{elapsed_precise} [{wide_bar}] {pos}/{len} games ({per_sec}, eta {eta})",
+        )
+        .unwrap(),
+    );
+
+    let stats = (0..games)
         .into_par_iter()
+        .progress_with(progress_bar.clone())
         .fold(
             || Stats::new(bots.len()),
             |mut acc, i| {
@@ -68,7 +77,10 @@ fn simulate(bots: &[&dyn Strategy], games: u64, seed: u64) -> Stats {
                 acc
             },
         )
-        .reduce(|| Stats::new(bots.len()), Stats::merge)
+        .reduce(|| Stats::new(bots.len()), Stats::merge);
+
+    progress_bar.finish_and_clear();
+    stats
 }
 
 fn main() {
