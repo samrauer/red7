@@ -68,24 +68,38 @@ impl Strategy for AggressivePalette {
 }
 
 /// Flat Monte Carlo. Deals opponents random hands from the unseen cards
-/// `samples` times, plays out each legal move randomly to the end of the
-/// round, and picks the move that won most often (ties: earliest in `legal`).
+/// `samples` times, plays out each legal move to the end of the round with
+/// every seat following `playout_strategy`, and picks the move that won most
+/// often (ties: earliest in `legal`).
 ///
 /// TODO: Sample hands consistent with opponents' past moves.
-/// TODO: Let playouts use a heuristic strategy instead of random moves.
 pub struct MonteCarlo {
-    pub samples: u32,
+    samples: u32,
+    /// Strategy every seat follows when playing a sampled world to the end.
+    playout_strategy: &'static dyn Strategy,
+    name: String,
+}
+
+impl MonteCarlo {
+    pub fn new(samples: u32, playout_strategy: &'static dyn Strategy) -> Self {
+        let name = format!("monte-carlo-{}", playout_strategy.name());
+        MonteCarlo {
+            samples,
+            playout_strategy,
+            name,
+        }
+    }
 }
 
 impl Strategy for MonteCarlo {
     fn name(&self) -> &str {
-        "monte-carlo"
+        &self.name
     }
     fn choose(&self, view: &PlayerView, legal: &[Move], rng: &mut dyn Rng) -> Move {
         if legal.len() == 1 {
             return legal[0];
         }
-        let seats = [&Random as &dyn Strategy; MAX_PLAYERS];
+        let seats = [self.playout_strategy; MAX_PLAYERS];
         let seats = &seats[..view.num_players()];
         let mut wins = vec![0u32; legal.len()];
         for _ in 0..self.samples {
@@ -124,9 +138,8 @@ mod tests {
         strategy.choose(&state.view(), legal, &mut rng)
     }
 
-    #[test]
-    fn monte_carlo_beats_random_heads_up() {
-        let mc = MonteCarlo { samples: 8 };
+    /// Play `mc` heads-up against `Random` and assert it wins at least 75%.
+    fn assert_monte_carlo_beats_random_heads_up(mc: &MonteCarlo) {
         let mut rng = SmallRng::seed_from_u64(7);
         let games = 200;
         let mut mc_wins = 0;
@@ -134,12 +147,26 @@ mod tests {
             // Alternate seats so moving first favors neither side.
             let mc_seat = g % 2;
             let mut seats: [&dyn Strategy; 2] = [&Random, &Random];
-            seats[mc_seat] = &mc;
+            seats[mc_seat] = mc;
             if play_game(&seats, &mut rng) == mc_seat {
                 mc_wins += 1;
             }
         }
-        assert!(mc_wins >= 150, "MC won only {mc_wins}/{games} vs random");
+        assert!(
+            mc_wins >= 150,
+            "{} won only {mc_wins}/{games} vs random",
+            mc.name()
+        );
+    }
+
+    #[test]
+    fn monte_carlo_with_random_playouts_beats_random_heads_up() {
+        assert_monte_carlo_beats_random_heads_up(&MonteCarlo::new(8, &Random));
+    }
+
+    #[test]
+    fn monte_carlo_with_conservative_playouts_beats_random_heads_up() {
+        assert_monte_carlo_beats_random_heads_up(&MonteCarlo::new(8, &ConservativePalette));
     }
 
     #[test]

@@ -77,11 +77,14 @@ fn main() {
         .map(|s| s.parse().expect("usage: red7 [games]"))
         .unwrap_or(100_000);
 
+    let monte_carlo_vs_random = strategy::MonteCarlo::new(50, &strategy::Random);
+    let monte_carlo_vs_conservative = strategy::MonteCarlo::new(50, &strategy::ConservativePalette);
     let bots: Vec<&dyn Strategy> = vec![
         &strategy::Random,
         &strategy::ConservativePalette,
         &strategy::AggressivePalette,
-        &strategy::MonteCarlo { samples: 50 },
+        &monte_carlo_vs_random,
+        &monte_carlo_vs_conservative,
     ];
 
     let start = Instant::now();
