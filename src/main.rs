@@ -6,7 +6,7 @@ use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use red7::game::{MAX_PLAYERS, MIN_PLAYERS, play_game};
-use red7::strategy::{self, Strategy};
+use red7::strategy::{self, CoveragePriority, Strategy};
 
 const SEED: u64 = 0x5EED;
 
@@ -91,10 +91,14 @@ fn main() {
 
     let monte_carlo_vs_random = strategy::MonteCarlo::new(50, &strategy::Random);
     let monte_carlo_vs_conservative = strategy::MonteCarlo::new(50, &strategy::ConservativePalette);
+    let rule_coverage = strategy::RuleCoverage::new(CoveragePriority::CoverageFirst);
+    let rule_coverage_economy = strategy::RuleCoverage::new(CoveragePriority::CardsFirst);
     let bots: Vec<&dyn Strategy> = vec![
         &strategy::Random,
         &strategy::ConservativePalette,
         &strategy::AggressivePalette,
+        &rule_coverage,
+        &rule_coverage_economy,
         &monte_carlo_vs_random,
         &monte_carlo_vs_conservative,
     ];

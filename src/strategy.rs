@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 
 use rand::{Rng, RngExt};
 
+use crate::card::{CardSet, Color, bit};
 use crate::game::{MAX_PLAYERS, Move, PlayerView};
 
 pub trait Strategy: Sync {
@@ -62,6 +63,79 @@ impl Strategy for AggressivePalette {
                 Move::Palette(c) => (0, -i16::from(c), 0),
                 Move::Canvas(c) => (1, i16::from(c), 0),
                 Move::Both { palette, canvas } => (2, -i16::from(palette), i16::from(canvas)),
+            })
+            .unwrap()
+    }
+}
+
+/// What to optimize first when ranking moves in `RuleCoverage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoveragePriority {
+    /// Most rules led, then fewest cards spent.
+    CoverageFirst,
+    /// Fewest cards spent, then most rules led.
+    CardsFirst,
+}
+
+/// Maximizes rule coverage: the number of the 7 canvas rules under which its
+/// palette (after the move) would be winning. A palette that leads under many
+/// rules is hard to overtake by changing the rule. Remaining ties go to the
+/// move that spends the lowest cards.
+pub struct RuleCoverage {
+    priority: CoveragePriority,
+}
+
+impl RuleCoverage {
+    pub fn new(priority: CoveragePriority) -> Self {
+        RuleCoverage { priority }
+    }
+}
+
+/// My palette after `mv`.
+fn palette_after(view: &PlayerView, mv: Move) -> CardSet {
+    let palette = view.palette(view.me());
+    match mv {
+        Move::Palette(card) | Move::Both { palette: card, .. } => palette | bit(card),
+        Move::Canvas(_) => palette,
+    }
+}
+
+/// How many rules I'd be winning under with `palette`.
+fn rule_coverage(view: &PlayerView, palette: CardSet) -> usize {
+    Color::ALL
+        .iter()
+        .filter(|&&rule| view.would_win(palette, rule))
+        .count()
+}
+
+/// (number of cards spent, sum of their ids). A lower id sum means weaker
+/// cards were given up.
+fn cards_spent(mv: Move) -> (u32, u32) {
+    match mv {
+        Move::Palette(card) | Move::Canvas(card) => (1, u32::from(card)),
+        Move::Both { palette, canvas } => (2, u32::from(palette) + u32::from(canvas)),
+    }
+}
+
+impl Strategy for RuleCoverage {
+    fn name(&self) -> &str {
+        match self.priority {
+            CoveragePriority::CoverageFirst => "rule-coverage",
+            CoveragePriority::CardsFirst => "rule-coverage-economy",
+        }
+    }
+    fn choose(&self, view: &PlayerView, legal: &[Move], _rng: &mut dyn Rng) -> Move {
+        legal
+            .iter()
+            .copied()
+            .min_by_key(|&mv| {
+                // Minimizing rules *not* led = maximizing coverage.
+                let rules_not_led = Color::ALL.len() - rule_coverage(view, palette_after(view, mv));
+                let (count, id_sum) = cards_spent(mv);
+                match self.priority {
+                    CoveragePriority::CoverageFirst => (rules_not_led as u32, count, id_sum),
+                    CoveragePriority::CardsFirst => (count, rules_not_led as u32, id_sum),
+                }
             })
             .unwrap()
     }
@@ -167,6 +241,49 @@ mod tests {
     #[test]
     fn monte_carlo_with_conservative_playouts_beats_random_heads_up() {
         assert_monte_carlo_beats_random_heads_up(&MonteCarlo::new(8, &ConservativePalette));
+    }
+
+    // In `pick`'s fresh 2-player state both palettes are empty, so a move's
+    // coverage is the number of rules under which the new palette scores > 0.
+    // R7 alone: 5 (fails Green and Violet). G2 alone: 7. Canvas-only: 0.
+
+    #[test]
+    fn coverage_first_spends_two_cards_for_more_coverage() {
+        let low = make_card(1, Color::Violet);
+        let red_seven = make_card(7, Color::Red);
+        let green_two = make_card(2, Color::Green);
+        let legal = [
+            Move::Canvas(low),
+            Move::Palette(red_seven),
+            Move::Both {
+                palette: green_two,
+                canvas: low,
+            },
+        ];
+        assert_eq!(
+            pick(&RuleCoverage::new(CoveragePriority::CoverageFirst), &legal),
+            Move::Both {
+                palette: green_two,
+                canvas: low
+            }
+        );
+        assert_eq!(
+            pick(&RuleCoverage::new(CoveragePriority::CardsFirst), &legal),
+            Move::Palette(red_seven)
+        );
+    }
+
+    #[test]
+    fn coverage_tie_spends_lowest_card() {
+        let red_two = make_card(2, Color::Red);
+        let green_two = make_card(2, Color::Green);
+        let legal = [Move::Palette(red_two), Move::Palette(green_two)];
+        for priority in [CoveragePriority::CoverageFirst, CoveragePriority::CardsFirst] {
+            assert_eq!(
+                pick(&RuleCoverage::new(priority), &legal),
+                Move::Palette(green_two)
+            );
+        }
     }
 
     #[test]

@@ -224,6 +224,10 @@ impl PlayerView<'_> {
     pub fn num_players(&self) -> usize {
         self.state.num_players()
     }
+    /// Would I be winning with `palette` under `rule`?
+    pub fn would_win(&self, palette: CardSet, rule: Color) -> bool {
+        self.state.would_win(self.me(), palette, rule)
+    }
 
     /// A full game state consistent with what this player can see: each
     /// opponent's hand is dealt uniformly at random from `unseen()`, keeping
