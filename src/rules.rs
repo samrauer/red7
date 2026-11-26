@@ -47,7 +47,9 @@ pub const COUNT_SHIFT: u32 = 6;
 /// `qualifying`. Returns 0 if `qualifying` is empty.
 #[inline]
 fn encode(count: u32, qualifying: CardSet) -> u16 {
-    highest(qualifying).map_or(0, |t| ((count as u16) << COUNT_SHIFT) | (t as u16 + 1))
+    highest(qualifying).map_or(0, |t| {
+        ((count as u16) << COUNT_SHIFT) | (u16::from(t.id()) + 1)
+    })
 }
 
 /// Score of a qualifying subset where every card counts.
@@ -99,12 +101,12 @@ pub fn score(palette: CardSet, rule: Color) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card::{Color::*, bit, make_card as c};
+    use crate::card::{Card, Color::*};
 
     fn set(cards: &[(u8, Color)]) -> CardSet {
         cards
             .iter()
-            .map(|&(n, col)| bit(c(n, col)))
+            .map(|&(n, col)| Card::new(n, col).bit())
             .fold(0, |a, b| a | b)
     }
 

@@ -9,7 +9,12 @@
 
 use std::fmt;
 
-pub type Card = u8;
+/// A single card, stored as its id.
+/// Ordering compares ids, so a stronger card always compares greater.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct Card(u8);
+
 pub type CardSet = u64;
 
 pub const NUM_CARDS: u8 = 49;
@@ -43,26 +48,39 @@ impl Color {
     }
 }
 
-pub fn make_card(number: u8, color: Color) -> Card {
-    debug_assert!((1..=7).contains(&number));
-    (number - 1) * 7 + color as u8
-}
+impl Card {
+    pub fn new(number: u8, color: Color) -> Card {
+        debug_assert!((1..=7).contains(&number));
+        Card((number - 1) * 7 + color as u8)
+    }
 
-pub fn number(card: Card) -> u8 {
-    card / 7 + 1
-}
+    fn from_id(id: u8) -> Card {
+        debug_assert!(id < NUM_CARDS);
+        Card(id)
+    }
 
-pub fn color(card: Card) -> Color {
-    Color::ALL[(card % 7) as usize]
-}
+    /// The card's id in `0..NUM_CARDS`; a higher id is a stronger card.
+    pub fn id(self) -> u8 {
+        self.0
+    }
 
-pub fn bit(card: Card) -> CardSet {
-    1u64 << card
+    pub fn number(self) -> u8 {
+        self.0 / 7 + 1
+    }
+
+    pub fn color(self) -> Color {
+        Color::ALL[(self.0 % 7) as usize]
+    }
+
+    /// The set containing just this card.
+    pub fn bit(self) -> CardSet {
+        1u64 << self.0
+    }
 }
 
 /// Highest card in the set, if any.
 pub fn highest(set: CardSet) -> Option<Card> {
-    set.checked_ilog2().map(|b| b as Card)
+    set.checked_ilog2().map(|b| Card::from_id(b as u8))
 }
 
 /// Iterate cards in a set, lowest first.
@@ -73,17 +91,22 @@ pub fn cards(mut set: CardSet) -> impl Iterator<Item = Card> {
         } else {
             let c = set.trailing_zeros() as u8;
             set &= set - 1;
-            Some(c)
+            Some(Card::from_id(c))
         }
     })
 }
 
-/// Pretty-printer for a single card, e.g. `R7`.
-pub struct CardDisplay(pub Card);
-
-impl fmt::Display for CardDisplay {
+/// Prints a card as e.g. `R7`.
+impl fmt::Display for Card {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", color(self.0).letter(), number(self.0))
+        write!(f, "{}{}", self.color().letter(), self.number())
+    }
+}
+
+/// Same as `Display`, so test failures show `R7` rather than an id.
+impl fmt::Debug for Card {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -92,7 +115,7 @@ pub struct SetDisplay(pub CardSet);
 
 impl fmt::Display for SetDisplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let parts: Vec<String> = cards(self.0).map(|c| CardDisplay(c).to_string()).collect();
+        let parts: Vec<String> = cards(self.0).map(|c| c.to_string()).collect();
         write!(f, "[{}]", parts.join(" "))
     }
 }
@@ -104,16 +127,16 @@ mod tests {
     #[test]
     fn ordering_number_then_color() {
         // Higher number beats any lower number.
-        assert!(make_card(2, Color::Violet) > make_card(1, Color::Red));
+        assert!(Card::new(2, Color::Violet) > Card::new(1, Color::Red));
         // Same number: color rank breaks the tie.
-        assert!(make_card(5, Color::Red) > make_card(5, Color::Orange));
-        assert_eq!(make_card(7, Color::Red), NUM_CARDS - 1);
+        assert!(Card::new(5, Color::Red) > Card::new(5, Color::Orange));
+        assert_eq!(Card::new(7, Color::Red).id(), NUM_CARDS - 1);
     }
 
     #[test]
     fn roundtrip() {
-        for c in 0..NUM_CARDS {
-            assert_eq!(make_card(number(c), color(c)), c);
+        for c in cards(FULL_DECK) {
+            assert_eq!(Card::new(c.number(), c.color()), c);
         }
     }
 }

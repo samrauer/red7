@@ -6,7 +6,7 @@
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::card::{Card, CardSet, Color, FULL_DECK, NUM_CARDS, bit, cards, color};
+use crate::card::{Card, CardSet, Color, FULL_DECK, cards};
 use crate::rules::score;
 use crate::strategy::Strategy;
 
@@ -14,7 +14,6 @@ pub const HAND_SIZE: usize = 7;
 pub const MIN_PLAYERS: usize = 2;
 /// 7 players x 7 cards uses exactly the 49-card deck.
 pub const MAX_PLAYERS: usize = 7;
-const _: () = assert!(MAX_PLAYERS * HAND_SIZE <= NUM_CARDS as usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move {
@@ -45,14 +44,14 @@ impl GameState {
             (MIN_PLAYERS..=MAX_PLAYERS).contains(&num_players),
             "supports {MIN_PLAYERS}-{MAX_PLAYERS} players"
         );
-        let mut deck: Vec<Card> = (0..NUM_CARDS).collect();
+        let mut deck: Vec<Card> = cards(FULL_DECK).collect();
         deck.shuffle(rng);
         let mut deck = deck.into_iter();
 
         let mut hands = vec![0; num_players];
         for hand in &mut hands {
             for _ in 0..HAND_SIZE {
-                *hand |= bit(deck.next().unwrap());
+                *hand |= deck.next().unwrap().bit();
             }
         }
 
@@ -109,14 +108,14 @@ impl GameState {
         let mut moves = Vec::new();
 
         for c in cards(hand) {
-            if self.would_win(p, pal | bit(c), self.rule) {
+            if self.would_win(p, pal | c.bit(), self.rule) {
                 moves.push(Move::Palette(c));
             }
-            if self.would_win(p, pal, color(c)) {
+            if self.would_win(p, pal, c.color()) {
                 moves.push(Move::Canvas(c));
             }
-            for k in cards(hand & !bit(c)) {
-                if self.would_win(p, pal | bit(c), color(k)) {
+            for k in cards(hand & !c.bit()) {
+                if self.would_win(p, pal | c.bit(), k.color()) {
                     moves.push(Move::Both {
                         palette: c,
                         canvas: k,
@@ -141,20 +140,20 @@ impl GameState {
     /// Move `card` from the current player's hand to their palette.
     fn add_to_palette(&mut self, card: Card) {
         self.take_from_hand(card);
-        self.palettes[self.current_player] |= bit(card);
+        self.palettes[self.current_player] |= card.bit();
     }
 
     /// Play `card` from the current player's hand to the canvas.
     fn play_to_canvas(&mut self, card: Card) {
         self.take_from_hand(card);
-        self.canvas |= bit(card);
-        self.rule = color(card);
+        self.canvas |= card.bit();
+        self.rule = card.color();
     }
 
     fn take_from_hand(&mut self, card: Card) {
         let hand = &mut self.hands[self.current_player];
-        debug_assert!(*hand & bit(card) != 0, "card not in hand");
-        *hand &= !bit(card);
+        debug_assert!(*hand & card.bit() != 0, "card not in hand");
+        *hand &= !card.bit();
     }
 
     pub fn view(&self) -> PlayerView<'_> {
@@ -242,7 +241,7 @@ impl PlayerView<'_> {
             world.hands[p] = pool
                 .by_ref()
                 .take(self.hand_size(p) as usize)
-                .fold(0, |hand, c| hand | bit(c));
+                .fold(0, |hand, c| hand | c.bit());
         }
         world
     }
@@ -256,9 +255,15 @@ pub fn play_game(strategies: &[&dyn Strategy], rng: &mut impl Rng) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card::NUM_CARDS;
     use crate::strategy::Random;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
+
+    #[test]
+    fn deck_is_big_enough_for_a_full_table() {
+        assert!(MAX_PLAYERS * HAND_SIZE <= NUM_CARDS as usize);
+    }
 
     #[test]
     fn deal_is_disjoint_with_empty_palettes() {
@@ -291,8 +296,8 @@ mod tests {
             palette: pal,
             canvas: canv,
         });
-        assert_eq!(state.canvas, bit(canv));
-        assert_eq!(state.rule, color(canv));
+        assert_eq!(state.canvas, canv.bit());
+        assert_eq!(state.rule, canv.color());
 
         let view = state.view();
         let unseen = view.unseen();

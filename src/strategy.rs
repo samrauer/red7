@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 
 use rand::{Rng, RngExt};
 
-use crate::card::{CardSet, Color, bit};
+use crate::card::{CardSet, Color};
 use crate::game::{MAX_PLAYERS, Move, PlayerView};
 
 pub trait Strategy: Sync {
@@ -38,9 +38,11 @@ impl Strategy for ConservativePalette {
             .iter()
             .copied()
             .min_by_key(|mv| match *mv {
-                Move::Palette(c) => (0, c, 0),
-                Move::Canvas(c) => (1, c, 0),
-                Move::Both { palette, canvas } => (2, palette.max(canvas), palette.min(canvas)),
+                Move::Palette(c) => (0, c.id(), 0),
+                Move::Canvas(c) => (1, c.id(), 0),
+                Move::Both { palette, canvas } => {
+                    (2, palette.max(canvas).id(), palette.min(canvas).id())
+                }
             })
             .unwrap()
     }
@@ -60,9 +62,11 @@ impl Strategy for AggressivePalette {
             .iter()
             .copied()
             .min_by_key(|mv| match *mv {
-                Move::Palette(c) => (0, -i16::from(c), 0),
-                Move::Canvas(c) => (1, i16::from(c), 0),
-                Move::Both { palette, canvas } => (2, -i16::from(palette), i16::from(canvas)),
+                Move::Palette(c) => (0, -i16::from(c.id()), 0),
+                Move::Canvas(c) => (1, i16::from(c.id()), 0),
+                Move::Both { palette, canvas } => {
+                    (2, -i16::from(palette.id()), i16::from(canvas.id()))
+                }
             })
             .unwrap()
     }
@@ -95,7 +99,7 @@ impl RuleCoverage {
 fn palette_after(view: &PlayerView, mv: Move) -> CardSet {
     let palette = view.palette(view.me());
     match mv {
-        Move::Palette(card) | Move::Both { palette: card, .. } => palette | bit(card),
+        Move::Palette(card) | Move::Both { palette: card, .. } => palette | card.bit(),
         Move::Canvas(_) => palette,
     }
 }
@@ -112,8 +116,8 @@ fn rule_coverage(view: &PlayerView, palette: CardSet) -> usize {
 /// cards were given up.
 fn cards_spent(mv: Move) -> (u32, u32) {
     match mv {
-        Move::Palette(card) | Move::Canvas(card) => (1, u32::from(card)),
-        Move::Both { palette, canvas } => (2, u32::from(palette) + u32::from(canvas)),
+        Move::Palette(card) | Move::Canvas(card) => (1, u32::from(card.id())),
+        Move::Both { palette, canvas } => (2, u32::from(palette.id()) + u32::from(canvas.id())),
     }
 }
 
@@ -199,7 +203,7 @@ impl Strategy for MonteCarlo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card::{Color, make_card};
+    use crate::card::{Card, Color};
     use crate::game::{GameState, play_game};
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
@@ -249,9 +253,9 @@ mod tests {
 
     #[test]
     fn coverage_first_spends_two_cards_for_more_coverage() {
-        let low = make_card(1, Color::Violet);
-        let red_seven = make_card(7, Color::Red);
-        let green_two = make_card(2, Color::Green);
+        let low = Card::new(1, Color::Violet);
+        let red_seven = Card::new(7, Color::Red);
+        let green_two = Card::new(2, Color::Green);
         let legal = [
             Move::Canvas(low),
             Move::Palette(red_seven),
@@ -275,10 +279,13 @@ mod tests {
 
     #[test]
     fn coverage_tie_spends_lowest_card() {
-        let red_two = make_card(2, Color::Red);
-        let green_two = make_card(2, Color::Green);
+        let red_two = Card::new(2, Color::Red);
+        let green_two = Card::new(2, Color::Green);
         let legal = [Move::Palette(red_two), Move::Palette(green_two)];
-        for priority in [CoveragePriority::CoverageFirst, CoveragePriority::CardsFirst] {
+        for priority in [
+            CoveragePriority::CoverageFirst,
+            CoveragePriority::CardsFirst,
+        ] {
             assert_eq!(
                 pick(&RuleCoverage::new(priority), &legal),
                 Move::Palette(green_two)
@@ -288,8 +295,8 @@ mod tests {
 
     #[test]
     fn aggressive_prefers_palette_and_plays_highest() {
-        let low = make_card(2, Color::Violet);
-        let high = make_card(6, Color::Red);
+        let low = Card::new(2, Color::Violet);
+        let high = Card::new(6, Color::Red);
         let legal = [
             Move::Canvas(low),
             Move::Palette(low),
@@ -305,8 +312,8 @@ mod tests {
 
     #[test]
     fn aggressive_discards_lowest_canvas_card() {
-        let low = make_card(3, Color::Blue);
-        let high = make_card(3, Color::Orange);
+        let low = Card::new(3, Color::Blue);
+        let high = Card::new(3, Color::Orange);
         let legal = [
             Move::Canvas(high),
             Move::Both {
@@ -320,9 +327,9 @@ mod tests {
 
     #[test]
     fn aggressive_both_maximizes_palette_then_minimizes_canvas() {
-        let a = make_card(1, Color::Green);
-        let b = make_card(4, Color::Yellow);
-        let c = make_card(7, Color::Indigo);
+        let a = Card::new(1, Color::Green);
+        let b = Card::new(4, Color::Yellow);
+        let c = Card::new(7, Color::Indigo);
         let legal = [
             Move::Both {
                 palette: b,
