@@ -99,7 +99,7 @@ impl RuleCoverage {
 fn palette_after(view: &PlayerView, mv: Move) -> CardSet {
     let palette = view.palette(view.me());
     match mv {
-        Move::Palette(card) | Move::Both { palette: card, .. } => palette | card.bit(),
+        Move::Palette(card) | Move::Both { palette: card, .. } => palette.with(card),
         Move::Canvas(_) => palette,
     }
 }

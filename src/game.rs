@@ -6,7 +6,7 @@
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::card::{Card, CardSet, Color, FULL_DECK, cards};
+use crate::card::{Card, CardSet, Color, FULL_DECK};
 use crate::rules::score;
 use crate::strategy::Strategy;
 
@@ -44,14 +44,14 @@ impl GameState {
             (MIN_PLAYERS..=MAX_PLAYERS).contains(&num_players),
             "supports {MIN_PLAYERS}-{MAX_PLAYERS} players"
         );
-        let mut deck: Vec<Card> = cards(FULL_DECK).collect();
+        let mut deck: Vec<Card> = FULL_DECK.cards().collect();
         deck.shuffle(rng);
         let mut deck = deck.into_iter();
 
-        let mut hands = vec![0; num_players];
+        let mut hands = vec![CardSet::EMPTY; num_players];
         for hand in &mut hands {
             for _ in 0..HAND_SIZE {
-                *hand |= deck.next().unwrap().bit();
+                hand.insert(deck.next().unwrap());
             }
         }
 
@@ -59,10 +59,10 @@ impl GameState {
         // card to their palette (always legal under Red).
         GameState {
             hands,
-            palettes: vec![0; num_players],
+            palettes: vec![CardSet::EMPTY; num_players],
             alive: vec![true; num_players],
             rule: Color::Red,
-            canvas: 0,
+            canvas: CardSet::EMPTY,
             current_player: 0,
         }
     }
@@ -107,15 +107,15 @@ impl GameState {
         let pal = self.palettes[p];
         let mut moves = Vec::new();
 
-        for c in cards(hand) {
-            if self.would_win(p, pal | c.bit(), self.rule) {
+        for c in hand.cards() {
+            if self.would_win(p, pal.with(c), self.rule) {
                 moves.push(Move::Palette(c));
             }
             if self.would_win(p, pal, c.color()) {
                 moves.push(Move::Canvas(c));
             }
-            for k in cards(hand & !c.bit()) {
-                if self.would_win(p, pal | c.bit(), k.color()) {
+            for k in hand.without(c).cards() {
+                if self.would_win(p, pal.with(c), k.color()) {
                     moves.push(Move::Both {
                         palette: c,
                         canvas: k,
@@ -140,20 +140,20 @@ impl GameState {
     /// Move `card` from the current player's hand to their palette.
     fn add_to_palette(&mut self, card: Card) {
         self.take_from_hand(card);
-        self.palettes[self.current_player] |= card.bit();
+        self.palettes[self.current_player].insert(card);
     }
 
     /// Play `card` from the current player's hand to the canvas.
     fn play_to_canvas(&mut self, card: Card) {
         self.take_from_hand(card);
-        self.canvas |= card.bit();
+        self.canvas.insert(card);
         self.rule = card.color();
     }
 
     fn take_from_hand(&mut self, card: Card) {
         let hand = &mut self.hands[self.current_player];
-        debug_assert!(*hand & card.bit() != 0, "card not in hand");
-        *hand &= !card.bit();
+        debug_assert!(hand.contains(card), "card not in hand");
+        hand.remove(card);
     }
 
     pub fn view(&self) -> PlayerView<'_> {
@@ -201,8 +201,8 @@ impl PlayerView<'_> {
     pub fn palette(&self, player: usize) -> CardSet {
         self.state.palettes[player]
     }
-    pub fn hand_size(&self, player: usize) -> u32 {
-        self.state.hands[player].count_ones()
+    pub fn hand_size(&self, player: usize) -> usize {
+        self.state.hands[player].len()
     }
     pub fn is_alive(&self, player: usize) -> bool {
         self.state.alive[player]
@@ -217,8 +217,12 @@ impl PlayerView<'_> {
     /// Cards this player can't see: they are in opponents' hands or were
     /// never dealt.
     pub fn unseen(&self) -> CardSet {
-        let palettes = self.state.palettes.iter().fold(0, |a, &p| a | p);
-        FULL_DECK & !self.hand() & !palettes & !self.state.canvas
+        let palettes = self
+            .state
+            .palettes
+            .iter()
+            .fold(CardSet::EMPTY, |a, &p| a | p);
+        FULL_DECK - self.hand() - palettes - self.state.canvas
     }
     pub fn num_players(&self) -> usize {
         self.state.num_players()
@@ -232,16 +236,13 @@ impl PlayerView<'_> {
     /// opponent's hand is dealt uniformly at random from `unseen()`, keeping
     /// its real size. Everything else is copied as-is (all of it is public).
     pub fn sample_world(&self, rng: &mut dyn Rng) -> GameState {
-        let mut pool: Vec<Card> = cards(self.unseen()).collect();
+        let mut pool: Vec<Card> = self.unseen().cards().collect();
         pool.shuffle(rng);
         let mut pool = pool.into_iter();
         let mut world = self.state.clone();
         // Re-deal every opponent, dead or alive, so no true hand leaks through.
         for p in (0..self.num_players()).filter(|&p| p != self.me()) {
-            world.hands[p] = pool
-                .by_ref()
-                .take(self.hand_size(p) as usize)
-                .fold(0, |hand, c| hand | c.bit());
+            world.hands[p] = pool.by_ref().take(self.hand_size(p)).collect();
         }
         world
     }
@@ -270,12 +271,12 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(1);
         for n in MIN_PLAYERS..=MAX_PLAYERS {
             let state = GameState::new(n, &mut rng);
-            let mut seen: CardSet = 0;
+            let mut seen = CardSet::EMPTY;
             for p in 0..n {
-                assert_eq!(state.hands[p].count_ones() as usize, HAND_SIZE);
-                assert_eq!(seen & state.hands[p], 0, "hands overlap");
+                assert_eq!(state.hands[p].len(), HAND_SIZE);
+                assert!(!seen.intersects(state.hands[p]), "hands overlap");
                 seen |= state.hands[p];
-                assert_eq!(state.palettes[p], 0);
+                assert!(state.palettes[p].is_empty());
             }
             assert_eq!(state.current_player, 0);
             assert_eq!(state.leader(), None);
@@ -290,24 +291,24 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(3);
         let mut state = GameState::new(3, &mut rng);
         // `apply` doesn't check legality, so any two cards will do.
-        let mut hand = cards(state.hands[0]);
+        let mut hand = state.hands[0].cards();
         let (pal, canv) = (hand.next().unwrap(), hand.next().unwrap());
         state.apply(Move::Both {
             palette: pal,
             canvas: canv,
         });
-        assert_eq!(state.canvas, canv.bit());
+        assert_eq!(state.canvas, CardSet::from(canv));
         assert_eq!(state.rule, canv.color());
 
         let view = state.view();
         let unseen = view.unseen();
-        assert_eq!(unseen & (view.hand() | view.palette(0) | view.canvas()), 0);
+        assert!(!unseen.intersects(view.hand() | view.palette(0) | view.canvas()));
         // Seat 0 can't see the other two hands, nor the 49 - 21 undealt cards.
         let other_hands = state.hands[1] | state.hands[2];
         assert_eq!(unseen & other_hands, other_hands);
         assert_eq!(
-            unseen.count_ones(),
-            NUM_CARDS as u32 - view.hand().count_ones() - 1 - view.canvas().count_ones()
+            unseen.len(),
+            NUM_CARDS as usize - view.hand().len() - 1 - view.canvas().len()
         );
     }
 
@@ -325,7 +326,10 @@ mod tests {
             }
             state.end_turn();
         }
-        assert!(state.canvas != 0, "want some canvas cards for a real test");
+        assert!(
+            !state.canvas.is_empty(),
+            "want some canvas cards for a real test"
+        );
 
         let me = state.current_player;
         let world = state.view().sample_world(&mut rng);
@@ -338,9 +342,9 @@ mod tests {
 
         let mut seen = world.canvas;
         for p in 0..4 {
-            assert_eq!(world.hands[p].count_ones(), state.hands[p].count_ones());
+            assert_eq!(world.hands[p].len(), state.hands[p].len());
             for set in [world.hands[p], world.palettes[p]] {
-                assert_eq!(seen & set, 0, "cards overlap");
+                assert!(!seen.intersects(set), "cards overlap");
                 seen |= set;
             }
         }

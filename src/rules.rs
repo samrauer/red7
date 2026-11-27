@@ -6,14 +6,14 @@
 //! the official rules. A score of 0 means the palette has no qualifying cards,
 //! and such a palette can never be "winning".
 
-use crate::card::{CardSet, Color, highest};
+use crate::card::{CardSet, Color};
 
 /// `NUMBER_MASKS[i]`: all seven cards with number `i + 1`.
 const NUMBER_MASKS: [CardSet; 7] = {
-    let mut masks = [0; 7];
+    let mut masks = [CardSet::EMPTY; 7];
     let mut i = 0;
     while i < 7 {
-        masks[i] = 0b111_1111 << (i * 7);
+        masks[i] = CardSet::all_of_number(i as u8 + 1);
         i += 1;
     }
     masks
@@ -21,23 +21,23 @@ const NUMBER_MASKS: [CardSet; 7] = {
 
 /// `COLOR_MASKS[i]`: all seven cards of color `i`.
 const COLOR_MASKS: [CardSet; 7] = {
-    let mut masks = [0; 7];
+    let mut masks = [CardSet::EMPTY; 7];
     let mut i = 0;
     while i < 7 {
-        let mut n = 0;
-        while n < 7 {
-            masks[i] |= 1 << (n * 7 + i);
-            n += 1;
-        }
+        masks[i] = CardSet::all_of_color(Color::ALL[i]);
         i += 1;
     }
     masks
 };
 
 /// Numbers 2, 4, 6 (indices 1, 3, 5).
-const EVEN_MASK: CardSet = NUMBER_MASKS[1] | NUMBER_MASKS[3] | NUMBER_MASKS[5];
+const EVEN_MASK: CardSet = NUMBER_MASKS[1]
+    .union(NUMBER_MASKS[3])
+    .union(NUMBER_MASKS[5]);
 /// Numbers 1, 2, 3.
-const BELOW_4_MASK: CardSet = NUMBER_MASKS[0] | NUMBER_MASKS[1] | NUMBER_MASKS[2];
+const BELOW_4_MASK: CardSet = NUMBER_MASKS[0]
+    .union(NUMBER_MASKS[1])
+    .union(NUMBER_MASKS[2]);
 
 /// The qualifying-card count sits above this bit; below it is the tie-breaker
 /// (highest card + 1, at most 49, which fits in 6 bits).
@@ -47,7 +47,7 @@ pub const COUNT_SHIFT: u32 = 6;
 /// `qualifying`. Returns 0 if `qualifying` is empty.
 #[inline]
 fn encode(count: u32, qualifying: CardSet) -> u16 {
-    highest(qualifying).map_or(0, |t| {
+    qualifying.highest().map_or(0, |t| {
         ((count as u16) << COUNT_SHIFT) | (u16::from(t.id()) + 1)
     })
 }
@@ -55,7 +55,7 @@ fn encode(count: u32, qualifying: CardSet) -> u16 {
 /// Score of a qualifying subset where every card counts.
 #[inline]
 fn subset_score(set: CardSet) -> u16 {
-    encode(set.count_ones(), set)
+    encode(set.len() as u32, set)
 }
 
 pub fn score(palette: CardSet, rule: Color) -> u16 {
@@ -76,7 +76,10 @@ pub fn score(palette: CardSet, rule: Color) -> u16 {
         Color::Blue => {
             // One card per distinct color counts; the best tie-breaker is
             // simply the highest card overall (it is the top of its color).
-            let colors = COLOR_MASKS.iter().filter(|&&m| palette & m != 0).count() as u32;
+            let colors = COLOR_MASKS
+                .iter()
+                .filter(|&&m| palette.intersects(m))
+                .count() as u32;
             encode(colors, palette)
         }
         Color::Indigo => {
@@ -86,7 +89,7 @@ pub fn score(palette: CardSet, rule: Color) -> u16 {
             let mut run_len = 0u32;
             for &mask in &NUMBER_MASKS {
                 let at_n = palette & mask;
-                if at_n == 0 {
+                if at_n.is_empty() {
                     run_len = 0;
                 } else {
                     run_len += 1;
@@ -104,10 +107,7 @@ mod tests {
     use crate::card::{Card, Color::*};
 
     fn set(cards: &[(u8, Color)]) -> CardSet {
-        cards
-            .iter()
-            .map(|&(n, col)| Card::new(n, col).bit())
-            .fold(0, |a, b| a | b)
+        cards.iter().map(|&(n, col)| Card::new(n, col)).collect()
     }
 
     #[test]
